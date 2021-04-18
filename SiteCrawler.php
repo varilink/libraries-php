@@ -24,21 +24,58 @@ class SiteCrawler {
    */
   public $site ;
   /**
-   * Seed paths for the crawl, e.g. /, /admin, /members
+   * An array of seed paths for the crawl, e.g. /, /admin, /members
+   *
+   * The crawler object will conduct the crawl from one or more seed paths. Each
+   * seed path must correspond to a HTML page within the site. The crawler will
+   * retrieve that page and test every link within it. Where links are internal
+   * to the site, it will retrieve the pages associated with those links and do
+   * the same to those pages and it will keep going until it runs out of links
+   * it has not tested and pages it has not parsed. Thus the seeds are the
+   * "home" locations for each independent area within the site that is to be
+   * crawled.
+   *
+   * Each item in the array must be an associative array with a key of "path"
+   * providing the path within the site for the seed, e.g. "/", "/admin",
+   * "/members" etc.
+   *
+   * If authentication is required in order to access the area within the site
+   * associated with the seed, then the necessary credentials are provided with
+   * the seed. This can be either for basic authentication or for form based
+   * authentiation.
+   *
+   * To provide basic authentication credetials, provide the key 'auth_basic'
+   * within the seed providing an array of user credentials as follows:
+   * $seeds = [
+   *   'path' => '/seed-path',
+   *   'auth_basic' => [ 'username', 'password' ]
+   * ];
+   *
+   * To provide form based authentication credentials, and to define how the
+   * form should be submitted, provide the key 'auth_login' within the seed
+   * $seeds = [
+   *   'path' => '/seed-path',
+   *   'auth_login' => [
+   *     '/login-path', 'Log in', [
+   *       'username' => 'username',
+   *       'password' => 'password',
+   *       'other-parm' => 'other-parm'
+   *     ]
+   *   ]
+   * ];
+   *
+   * The string to find the logon form ('Log in') and the array of form
+   * parameters and values should be as required by the Symfony browser kit,
+   * see:
+   * @link https://symfony.com/doc/current/components/browser_kit.html#submitting-forms Symfony Browser Kit - Submitting Forms
    */
   public $seeds = [ ] ;
-  /**
-   * The pages that have been parsed
-   */
-  public $pages = [ ] ;
   /**
    * The link currently being tested
    */
   public $link ;
-  /**
-   * The links that have been found and tested
-   */
-  public $links = [ ] ;
+
+  public $browser ;
 
   /**
    * Constructor for the SiteCrawler class
@@ -59,7 +96,7 @@ class SiteCrawler {
   public function crawl ( array $config = [ ] ) : void {
 
     if ( array_key_exists ( 'ignore' , $config ) &&
-      $config [ 'ignore' ] instanceof Closure ) {
+      $config [ 'ignore' ] instanceof \Closure ) {
       $ignore = $config [ 'ignore' ] ;
     } else {
       $ignore = FALSE ;
@@ -79,32 +116,23 @@ class SiteCrawler {
 
     foreach ( $this -> seeds as $seed ) {
 
-      if ( $log ) { print 'Started seed=' . $seed [ 'path' ] . "\n" ; }
+      $this -> seed = $seed ;
 
-      if ( array_key_exists ( 'auth_basic' , $seed ) ) {
+      if ( $log ) { print 'Started seed=' . $seed -> path . "\n" ; }
 
-        $browser = new HttpBrowser ( HttpClient::create ( [
-          'auth_basic' => $seed [ 'auth_basic' ]
-        ] ) ) ;
+      if ( isset ( $seed -> client_config ) ) {
+
+        $this -> browser = new HttpBrowser (
+          HttpClient::create ( $seed -> client_config )
+        ) ;
 
       } else {
 
-        $browser = new HttpBrowser ( HttpClient::create ( ) ) ;
+        $this -> browser = new HttpBrowser ( HttpClient::create ( ) ) ;
 
       }
 
-      if ( array_key_exists ( 'auth_login' , $seed ) ) {
-
-        $browser -> request (
-          'GET' , $this -> site . $seed [ 'auth_login' ] [ 0 ]
-        ) ;
-
-        $browser -> submitForm (
-          $seed [ 'auth_login' ] [ 1 ] , $seed [ 'auth_login' ] [ 2 ]
-        ) ;
-
-      }
-
+      isset ( $seed -> setup ) && ( $seed -> setup ) ( $this ) ;
 
     /*
       The HttpBrower object returns a DomCrawler object on a successful GET
@@ -114,8 +142,8 @@ class SiteCrawler {
       have to check their content. Therefore, if the call to a seed is
       successful, use it to start the population of the crawlers array.
     */
-    $crawlers [ ] = $browser -> request (
-      'GET' , $this -> site . $seed [ 'path' ]
+    $crawlers [ ] = $this -> browser -> request (
+      'GET' , $this -> site . $seed -> path
     ) ;
 
     $i = 0 ;
@@ -145,7 +173,7 @@ class SiteCrawler {
       foreach ( $crawler as $element ) {
         $html .= $element -> ownerDocument -> saveHTML ( $element ) ;
       }
-      $this -> pages [ $page_path ] = gzcompress ( $html ) ;
+      $this -> seed -> pages [ $page_path ] = gzcompress ( $html ) ;
 
       if ( $log && $log > 1 ) {
         print "--Started parsing page=$page_path\n" ;
@@ -155,28 +183,41 @@ class SiteCrawler {
       # Process each <a> tag (link) found in this page
       {
 
+        # Make the link available as one of this object's public properties
         $this -> link = $link ;
 
-        # Store this link's URI and HREF in convenience variables
+        # Store this link's URI in a convenience variable
         $link_uri = $link -> getUri ( ) ;
-        $href = $link -> getNode ( ) -> getAttribute ( 'href' ) ;
 
-        if ( $link_uri === $href ) {
-          if ( $log && $log > 2 ) { print "----Link=$link_uri" ; }
-        } else {
-                    if ( $log && $log > 2 ) {
-          print
-            '----Link=' . substr ( $link_uri , strlen ( $this -> site ) ) ;
+        /*
+          Only test http or https links. Ignore other protocols, e.g. mailto or
+          javascript links.
+        */
+        if ( ! preg_match ( '/^(?:http|https):/' , $link_uri ) ) {
+          if ( $log && $log > 2 ) {
+            print " -> ignored (not http/https link)\n" ;
           }
-        }
-
-        if ( in_array ( $href , array_column ( $this -> seeds , 'path' ) ) ) {
-          if ( $log && $log > 2 ) { print " -> ignored (seed)\n" ; }
           continue ;
         }
 
-        if ( preg_match ( '/^mailto:/' , $link_uri ) ) {
-          if ( $log && $log > 2 ) { print " -> ignored (mailto link)\n" ; }
+        if ( strpos ( $link_uri , $this -> site ) === 0 ) {
+          $link_type = 'int' ;
+        } elseif ( strpos ( $link_uri , $this -> site ) === FALSE ) {
+          $link_type = 'ext' ;
+        }
+
+        if ( $link_type === 'ext' ) {
+          if ( $log && $log > 2 ) { print "----Link=$link_uri" ; }
+        } else {
+          $link_path = substr ( $link_uri , strlen ( $this -> site ) ) ;
+          if ( $log && $log > 2 ) { print "----Link=$link_path" ; }
+        }
+
+        if (
+          $link_type === 'int'
+          && in_array ( $link_path , array_column ( $this -> seeds , 'path' ) )
+        ) {
+          if ( $log && $log > 2 ) { print " -> ignored (seed)\n" ; }
           continue ;
         }
 
@@ -186,11 +227,18 @@ class SiteCrawler {
         }
 
         #if ( ! array_key_exists ( urlencode ( $link_uri ) , $this -> links ) )
-        if ( ! array_key_exists ( $link_uri , $this -> links ) )
+        if ( ! array_key_exists ( $link_uri , $this -> seed -> links ) )
         # We haven't yet checked this link before,so check it now
         {
 
-          if ( $link_uri === $href )
+################################################################################
+
+# THIS CAN BE TRUE FOR NON EXTERNAL LINKS, E.G. javascript:void(0); OR mailto
+# NEED A GENERIC TEST, E.G. ON HTTP/HTTPS PROTOCOL
+
+################################################################################
+
+          if ( $link_type === 'ext' )
           /*
             The HREF is a URI and not a path within our website. We do not
             need to use our browser object to test it, since we do not need
@@ -249,8 +297,8 @@ class SiteCrawler {
             */
           {
 
-            $candidate_crawler = $browser -> request ( 'GET' , $link_uri ) ;
-            $rc = $browser -> getResponse ( ) -> getStatusCode ( ) ;
+            $candidate_crawler = $this -> browser -> request ( 'GET' , $link_uri ) ;
+            $rc = $this -> browser -> getResponse ( ) -> getStatusCode ( ) ;
             if ( $log && $log > 2 ) { print " -> internal, tested and RC=$rc" ; }
             if (
                $rc === 200
@@ -273,7 +321,7 @@ class SiteCrawler {
           }
 
           #$this -> links [ urlencode ( $link_uri ) ] [ 'result' ] = $rc ;
-          $this -> links [ $link_uri ] [ 'result' ] = $rc ;
+          $this -> seed -> links [ $link_uri ] [ 'result' ] = $rc ;
 
         } else {
 
@@ -289,7 +337,7 @@ class SiteCrawler {
           is currently being parsed.
         */
 #        $this -> links [ urlencode ( $link_uri ) ] [ 'pages' ] [ ] = $page_uri ;
-        $this -> links [ $link_uri ] [ 'pages' ] [ ] = $page_uri ;
+        $this -> seed -> links [ $link_uri ] [ 'pages' ] [ ] = $page_uri ;
 
         } # foreach ( $crawler -> filter ( 'a' ) -> links ( ) as $link )
 
@@ -303,11 +351,55 @@ class SiteCrawler {
 
       } # while ( $crawler = array_shift ( $crawlers ) )
 
-      if ( $log ) { print 'Finished seed=' . $seed [ 'path' ] . "\n" ; }
+      if ( $log ) { print 'Finished seed=' . $seed -> path . "\n" ; }
+
+      isset ( $seed -> teardown ) && ( $seed -> teardown ) ( $this ) ;
 
 
     } # foreach ( $this -> seeds as $seed )
 
   } # function crawl ( )
+
+}
+
+namespace Varilink\SiteCrawler ;
+
+class Seed {
+
+  public $path ;
+  public $client ;
+  public $name ;
+  public $ignore ;
+  public $setup ;
+  public $teardown ;
+  /**
+   * The links that have been found and tested
+   */
+  public $links = [ ] ;
+  /**
+   * The pages that have been parsed
+   */
+  public $pages = [ ] ;
+
+  function __construct ( $config ) {
+
+    $this -> path = $config [ 'path' ] ;
+    if ( array_key_exists ( 'client' , $config ) ) {
+      $this -> client = $config [ 'client' ] ;
+    }
+    if ( array_key_exists ( 'name' , $config ) ) {
+      $this -> name = $config [ 'name' ] ;
+    }
+    if ( array_key_exists ( 'ignore' , $config ) ) {
+      $this -> ignore = $config [ 'ignore' ] ;
+    }
+    if ( array_key_exists ( 'setup' , $config ) ) {
+      $this -> setup = $config [ 'setup' ] ;
+    }
+    if ( array_key_exists ( 'teardown' , $config ) ) {
+      $this -> teardown = $config [ 'teardown' ] ;
+    }
+
+  }
 
 }
