@@ -1,28 +1,21 @@
-<?php
+<?php namespace Varilink ;
 /**
- * There is nothing to say for the file that the class description doesn't cover
- * @ignore
+ * \Varilink\SiteCrawler and \Varilink\SiteCrawler\Seeds
  */
-
-namespace Varilink ;
-
-/**
- * @ignore
- */
-require_once '/vendor/autoload.php' ;
 
 use Symfony\Component\BrowserKit\HttpBrowser ;
 use Symfony\Component\HttpClient\HttpClient ;
+use Symfony\Component\DomCrawler\UriResolver ;
 
 /**
- * Class to provide crawler objects that crawl websites via HTTP
+ * Crawls websites via HTTP and exposes the results
  */
 class SiteCrawler {
 
   /**
-   * Site (protocol and host) being crawled, e.g. http://www.example.com
+   * Site (protocol and host) to be crawled, e.g. http://www.example.com
    */
-  public $site ;
+  public $base ;
   /**
    * An array of seed paths for the crawl, e.g. /, /admin, /members
    *
@@ -71,10 +64,13 @@ class SiteCrawler {
    */
   public $seeds = [ ] ;
   /**
-   * The link currently being tested
+   * The link that is currently being processed
    */
   public $link ;
 
+  /**
+   * @ignore
+   */
   public $browser ;
 
   /**
@@ -82,9 +78,9 @@ class SiteCrawler {
    * @param string $site The site to be crawled
    * @param array $seeds One or more seed paths for the crawl within the site
    */
-  public function __construct ( string $site , array $seeds ) {
+  public function __construct ( string $base , array $seeds ) {
 
-    $this -> site = $site ;
+    $this -> base = $base ;
     $this -> seeds = $seeds ;
 
   }
@@ -93,7 +89,8 @@ class SiteCrawler {
    * Crawls the website
    * @param array $config Optional configuration settings
    */
-  public function crawl ( array $config = [ ] ) : void {
+  public function crawl ( array $config = [ ] ) : void
+  {
 
     if ( array_key_exists ( 'ignore' , $config ) &&
       $config [ 'ignore' ] instanceof \Closure ) {
@@ -118,7 +115,15 @@ class SiteCrawler {
 
       $this -> seed = $seed ;
 
-      if ( $log ) { print 'Started seed=' . $seed -> path . "\n" ; }
+      if ( $log ) {
+        print 'Started seed ' ;
+        if ( $seed -> name ) {
+          print 'with name=' . $seed -> name . ' and path=' . $seed -> path ;
+        } else {
+          print 'with path=' . $seed -> path ;
+        }
+        print "\n" ;
+      }
 
       if ( isset ( $seed -> client_config ) ) {
 
@@ -132,104 +137,113 @@ class SiteCrawler {
 
       }
 
-      isset ( $seed -> setup ) && ( $seed -> setup ) ( $this ) ;
-
-    /*
-      The HttpBrower object returns a DomCrawler object on a successful GET
-      request to a URI that returns HTML. We maintain an array of crawler
-      objects for all the pages within the website that we have still to
-      parse. We know that the seeds correspond to HTML pages so we don't
-      have to check their content. Therefore, if the call to a seed is
-      successful, use it to start the population of the crawlers array.
-    */
-    $crawlers [ ] = $this -> browser -> request (
-      'GET' , $this -> site . $seed -> path
-    ) ;
-
-    $i = 0 ;
-
-    while ( $crawler = array_shift ( $crawlers ) )
-    /*
-      There are pages in our crawlers array still to parse. Take the next
-      one from the array and parse it.
-    */
-    {
-
-      $i++ ;
-      if ( $limit && $i > $limit ) {
-        $crawlers = [ ] ;
-        break ;
-      }
+      isset ( $seed -> setup ) && $seed->setup ( $this ) ;
 
       /*
-        Create a convenience variable to hold the pages URI. Dump the HTML
-        content from the crawler (when we registered the crawler we tested
-        that the page contained HTML). Store the HTML with a key of the URI
-        for later testing that the HTML content is valid.
+        The HttpBrower object returns a DomCrawler object on a successful GET
+        request to a URI that returns HTML. We maintain an array of crawler
+        objects for all the pages within the website that we have still to
+        parse. We know that the seeds correspond to HTML pages so we don't
+        have to check their content. Therefore, if the call to a seed is
+        successful, use it to start the population of the crawlers array.
       */
-      $page_uri = $crawler -> getUri ( ) ;
-      $page_path = substr ( $page_uri , strlen ( $this -> site ) ) ;
-      $html = '' ;
-      foreach ( $crawler as $element ) {
-        $html .= $element -> ownerDocument -> saveHTML ( $element ) ;
-      }
-      $this -> seed -> pages [ $page_path ] = gzcompress ( $html ) ;
+      $crawlers [ ] = $this -> browser -> request (
+        'GET' , $this -> base . $seed -> path
+      ) ;
 
-      if ( $log && $log > 1 ) {
-        print "--Started parsing page=$page_path\n" ;
-      }
+      $i = 0 ;
 
-      foreach ( $crawler -> filter ( 'a' ) -> links ( ) as $link )
-      # Process each <a> tag (link) found in this page
-      {
+      while ( $crawler = array_shift ( $crawlers ) ) {
+        /*
+          There are pages in our crawlers array still to parse. Take the next
+          one from the array and parse it.
+        */
 
-        # Make the link available as one of this object's public properties
-        $this -> link = $link ;
-
-        # Store this link's URI in a convenience variable
-        $link_uri = $link -> getUri ( ) ;
+        $i++ ;
+        if ( $limit && $i > $limit ) {
+          $crawlers = [ ] ;
+          break ;
+        }
 
         /*
-          Only test http or https links. Ignore other protocols, e.g. mailto or
-          javascript links.
+          Create a convenience variable to hold the pages URI. Dump the HTML
+          content from the crawler (when we registered the crawler we tested
+          that the page contained HTML). Store the HTML with a key of the URI
+          for later testing that the HTML content is valid.
         */
-        if ( ! preg_match ( '/^(?:http|https):/' , $link_uri ) ) {
-          if ( $log && $log > 2 ) {
-            print " -> ignored (not http/https link)\n" ;
+        $page_uri = $crawler -> getUri ( ) ;
+        $page_path = substr ( $page_uri , strlen ( $this -> base ) ) ;
+        $html = '' ;
+        foreach ( $crawler as $element ) {
+          $html .= $element -> ownerDocument -> saveHTML ( $element ) ;
+        }
+        $this -> seed -> pages [ $page_path ] = gzcompress ( $html ) ;
+
+        if ( $log && $log > 1 ) {
+          print "--Started parsing page=$page_path\n" ;
+        }
+
+        # Process each <a> tag (link) found in this page
+        foreach ( $crawler -> filter ( 'a , link , script' ) as $link ) {
+
+          # Store this link's URI in a convenience variable
+          if ( $link -> tagName === 'a' ) {
+            $rawUri = $link -> getAttribute ( 'href' ) ;
+          } elseif ( $link -> tagName === 'link' ) {
+            $rawUri = $link -> getAttribute ( 'href' ) ;
+          } elseif ( $link -> tagName === 'script' ) {
+            $rawUri = $link -> getAttribute ( 'src' ) ;
           }
-          continue ;
-        }
 
-        if ( strpos ( $link_uri , $this -> site ) === 0 ) {
-          $link_type = 'int' ;
-        } elseif ( strpos ( $link_uri , $this -> site ) === FALSE ) {
-          $link_type = 'ext' ;
-        }
+          $link_uri = UriResolver::resolve (
+            $rawUri , $crawler -> getBaseHref ( )
+          ) ;
 
-        if ( $link_type === 'ext' ) {
-          if ( $log && $log > 2 ) { print "----Link=$link_uri" ; }
-        } else {
-          $link_path = substr ( $link_uri , strlen ( $this -> site ) ) ;
-          if ( $log && $log > 2 ) { print "----Link=$link_path" ; }
-        }
+          # Make the link available as one of this object's public properties
+          $this -> link = $link_uri ;
 
-        if (
-          $link_type === 'int'
-          && in_array ( $link_path , array_column ( $this -> seeds , 'path' ) )
-        ) {
-          if ( $log && $log > 2 ) { print " -> ignored (seed)\n" ; }
-          continue ;
-        }
+          /*
+            Only test http or https links. Ignore other protocols, e.g. mailto
+            or javascript links.
+          */
+          if ( ! preg_match ( '/^(?:http|https):/' , $link_uri ) ) {
+            if ( $log && $log > 2 ) {
+              print " -> ignored (not http/https link)\n" ;
+            }
+            continue ;
+          }
 
-        if ( $ignore && $ignore ( $this ) ) {
-          if ( $log && $log > 2 ) { print " -> ignored (user defined)\n" ; }
-          continue ;
-        }
+          if ( strpos ( $link_uri , $this -> base ) === 0 ) {
+            $link_type = 'int' ;
+          } elseif ( strpos ( $link_uri , $this -> base ) === FALSE ) {
+            $link_type = 'ext' ;
+          }
 
-        #if ( ! array_key_exists ( urlencode ( $link_uri ) , $this -> links ) )
-        if ( ! array_key_exists ( $link_uri , $this -> seed -> links ) )
-        # We haven't yet checked this link before,so check it now
-        {
+          if ( $link_type === 'ext' ) {
+            if ( $log && $log > 2 ) { print "----Link=$link_uri" ; }
+          } else {
+            $link_path = substr ( $link_uri , strlen ( $this -> base ) ) ;
+            if ( $log && $log > 2 ) { print "----Link=$link_path" ; }
+          }
+
+          if (
+            $link_type === 'int'
+            && in_array (
+              $link_path , array_column ( $this -> seeds , 'path' )
+            )
+          ) {
+            if ( $log && $log > 2 ) { print " -> ignored (seed)\n" ; }
+            continue ;
+          }
+
+          if ( $ignore && $ignore ( $this ) ) {
+            if ( $log && $log > 2 ) { print " -> ignored (user defined)\n" ; }
+            continue ;
+          }
+
+          #if ( ! array_key_exists ( urlencode ( $link_uri ) , $this -> links ) )
+          if ( ! array_key_exists ( $link_uri , $this -> seed -> links ) ) {
+          # We haven't yet checked this link before,so check it now
 
 ################################################################################
 
@@ -238,98 +252,114 @@ class SiteCrawler {
 
 ################################################################################
 
-          if ( $link_type === 'ext' )
-          /*
-            The HREF is a URI and not a path within our website. We do not
-            need to use our browser object to test it, since we do not need
-            to be authenticated and we are not interested in the content,
-            only that the link returns something.
-          */
-          {
+            if ( $link_type === 'ext' ) {
+              /*
+                The HREF is a URI and not a path within our website. We do not
+                need to use our browser object to test it, since we do not need
+                to be authenticated and we are not interested in the content,
+                only that the link returns something.
+              */
 
-            /*
-              Capture the hostname for a hostname DNS lookup. The HttpClient
-              object exhibits behaviour we don't want to trigger if it is
-              used to try to follow a link for which the hostname DNS lookup
-              fails.
-            */
-            preg_match (
-              '/^(?:http|https):\/\/([\w|\.|-]+)/' , $link_uri , $matches
-            ) ;
-            $hostname = $matches [ 1 ] ;
+              /*
+                Capture the hostname for a hostname DNS lookup. The HttpClient
+                object exhibits behaviour we don't want to trigger if it is
+                used to try to follow a link for which the hostname DNS lookup
+                fails.
+              */
+              preg_match (
+                '/^(?:http|https):\/\/([\w|\.|-]+)/' , $link_uri , $matches
+              ) ;
+              $hostname = $matches [ 1 ] ;
 
-            if ( gethostbyname ( $hostname ) != $hostname )
-            /*
-              gethostbyname returns an IP address if successful and the
-              hostname that was used for the lookup otherwise. So, if it
-              returned something other than the hostname we know the lookup
-              was successful and we can go ahead to test the link.
-            */
-            {
+              if ( gethostbyname ( $hostname ) != $hostname ) {
+              /*
+                gethostbyname returns an IP address if successful and the
+                hostname that was used for the lookup otherwise. So, if it
+                returned something other than the hostname we know the lookup
+                was successful and we can go ahead to test the link.
+              */
 
-              $client = HttpClient::create ( ) ;
-              try {
-                $response = $client -> request ( 'GET' , $link_uri , [
-                  'timeout' => 1 , 'max_duration' => 2
-                ] ) ;
-                $rc = $response -> getStatusCode ( ) ;
-              } catch ( Exception $e ) {
-                $rc = 404 ;
+                $client = HttpClient::create ( ) ;
+                try {
+                  $response = $client -> request ( 'GET' , $link_uri , [
+                    'timeout' => 1 , 'max_duration' => 2
+                  ] ) ;
+                  $status_code = $response -> getStatusCode ( ) ;
+                } catch ( Exception $e ) {
+                  $status_code = 404 ;
+                }
+
+              } else {
+                /*
+                  The hostname lookup was unsuccessful. Represent this as a HTTP
+                  404 (not found) response, which isn't strictly correct but it
+                  serves our purposes here.
+                */
+                $status_code = 404 ;
               }
 
-            } else
-            /*
-              The hostname lookup was unsuccessful. Represent this as a HTTP
-              404 (not found) response, which isn't strictly correct but it
-              serves our purposes here.
-            */
-            {
-              $rc = 404 ;
-            }
+              if ( $log && $log > 2 ) {
+                print " -> external, tested and RC=$status_code\n" ;
+              }
 
-            if ( $log && $log > 2 ) { print " -> external, tested and RC=$rc\n" ; }
-
-          } else
-            /*
-              The HREF and the URI for this link are different. That tells us
-              that the HREF is a path within our website and not a link to a
-              page external to our website.
-            */
-          {
-
-            $candidate_crawler = $this -> browser -> request ( 'GET' , $link_uri ) ;
-            $rc = $this -> browser -> getResponse ( ) -> getStatusCode ( ) ;
-            if ( $log && $log > 2 ) { print " -> internal, tested and RC=$rc" ; }
-            if (
-               $rc === 200
-               # The GET request was successful
-               && count ( $candidate_crawler ) > 0
-               /*
-                 The crawler returned has nodes in it, which indicates that
-                 HTML was returned and not, for example, binary content such
-                 as a PDF file. Since we are validating HTML and parsing it
-                 for links, add this crawler to the list of crawlers to be
-                 parsed.
-               */
-            ) {
-              if ( $log && $log > 2 ) { print " (added to pages to be parsed)\n" ; }
-              $crawlers [ ] = $candidate_crawler ;
             } else {
+              /*
+                The HREF and the URI for this link are different. That tells us
+                that the HREF is a path within our website and not a link to a
+                page external to our website.
+              */
+
+              $candidate_crawler =
+                $this -> browser -> request ( 'GET' , $link_uri ) ;
+              $status_code =
+                $this -> browser -> getResponse ( ) -> getStatusCode ( ) ;
+              if ( $log && $log > 2 ) {
+                print " -> internal, tested and RC=$status_code" ;
+              }
+
+              if ( $status_code === 200 ) {
+
+                # The GET request was successful
+
+                if (
+                  $link -> tagName === 'a' && count ( $candidate_crawler ) > 0
+                ) {
+
+                  /*
+                    The crawler returned has nodes in it, which indicates that
+                    HTML was returned and not, for example, binary content such
+                    as a PDF file. Since we are validating HTML and parsing it
+                    for links, add this crawler to the list of crawlers to be
+                    parsed.
+                  */
+                  if ( $log && $log > 2 ) {
+                    print " (added to pages to be parsed)\n" ;
+                  }
+                  $crawlers [ ] = $candidate_crawler ;
+                } elseif (
+                  $link -> tagName === 'link' || $link -> tagName === 'script'
+                ) {
+                  $this -> seed -> content [ $link_path ] = gzcompress (
+                    $this -> browser -> getResponse ( ) -> getContent ( )
+                  ) ;
+                }
+
+              } # if ( $status_code === 200 )
+
               if ( $log && $log > 2 ) { print "\n" ; }
+
+            } # if ( $link_type === 'ext' )
+
+            $this -> seed -> links [ $link_uri ] [ 'status_code' ]
+              = $status_code ;
+
+          } else {
+
+            if ( $log && $log > 2 ) {
+              print " -> ignored (already processed)\n" ;
             }
 
-          }
-
-          #$this -> links [ urlencode ( $link_uri ) ] [ 'result' ] = $rc ;
-          $this -> seed -> links [ $link_uri ] [ 'result' ] = $rc ;
-
-        } else {
-
-          if ( $log && $log > 2 ) {
-            print " -> ignored (already processed)\n" ;
-          }
-
-        } # if ( ! array_key_exists ( $link_uri , $this -> links ) )
+          } # if ( ! array_key_exists ( $link_uri , $this -> links ) )
 
         /*
           Whether we tested this link or didn't, because it had already been
@@ -353,7 +383,7 @@ class SiteCrawler {
 
       if ( $log ) { print 'Finished seed=' . $seed -> path . "\n" ; }
 
-      isset ( $seed -> teardown ) && ( $seed -> teardown ) ( $this ) ;
+      isset ( $seed -> teardown ) && $seed -> teardown ( $this ) ;
 
 
     } # foreach ( $this -> seeds as $seed )
@@ -364,29 +394,82 @@ class SiteCrawler {
 
 namespace Varilink\SiteCrawler ;
 
+class Link {
+
+  private $domElement ;
+
+  function __construct ( DomElement $domElement ) {
+
+  }
+
+}
+
 class Seed {
 
+  /**
+   * The path within the website from which the crawl starts
+   */
   public $path ;
-  public $client ;
+
+  /**
+   * Optional name for the seed
+   *
+   * Sometimes there may be a need to crawl a website more than once for the
+   * same seed path; for example, to crawl a /user area multiple areas with
+   * for different users. Where this is the case, setting a unique seed name for
+   * each of those crawls allows the results of each crawl to be identified in
+   * reports of the crawls.
+   */
   public $name ;
+
+  /**
+   * Closure that can be used to prevent links being follows
+   *
+   * When c
+   */
   public $ignore ;
   public $setup ;
   public $teardown ;
+
   /**
-   * The links that have been found and tested
+   * The links that have been found by Varilink\SiteCrawler for this seed
+   *
+   * The links are stored as an associative array, the keys of which are the
+   * URIs of each link and the values of which are associative arrays that
+   * contain the following information:
+   * 'result' => The status code of the HTTP response when returned when
+   * following the link.
+   * 'pages' => An array of paths corresponding to the pages within the site in
+   * links with this URI were found.
    */
   public $links = [ ] ;
+
   /**
-   * The pages that have been parsed
+   * The pages that have been parsed by Varilink\SiteCrawler for this seed
+   *
+   * The pages are stored as an associative array, the keys of which are the
+   * paths within the site that the page was found at and the values of which
+   * is the HTML content of the page that has been compressed using gzcompress.
    */
   public $pages = [ ] ;
 
-  function __construct ( $config ) {
+  public $content = [ ] ;
 
-    $this -> path = $config [ 'path' ] ;
-    if ( array_key_exists ( 'client' , $config ) ) {
-      $this -> client = $config [ 'client' ] ;
-    }
+  /**
+   * Constructor for Varilink\SiteCrawler\Seed
+   *
+   * @param string $path Mandatory path for the seed, e.g. /admin
+   * @param array $config Optional associative configuration array for the seed.
+   * If this is provided, one or more of the following parameters can be set:
+   * - name
+   * - ignore
+   * - setup
+   * - teardown
+   */
+  function __construct ( string $path , array $config = [ ] ) {
+
+    $this -> path = $path ;
+
     if ( array_key_exists ( 'name' , $config ) ) {
       $this -> name = $config [ 'name' ] ;
     }
@@ -398,6 +481,14 @@ class Seed {
     }
     if ( array_key_exists ( 'teardown' , $config ) ) {
       $this -> teardown = $config [ 'teardown' ] ;
+    }
+
+  }
+
+  public function __call ( $method , $args ) {
+
+    if ( is_callable ( array ( $this , $method ) ) ) {
+      return call_user_func_array ( $this -> $method , $args ) ;
     }
 
   }
