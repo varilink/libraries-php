@@ -1,0 +1,27 @@
+version: "3.6"
+
+services:
+
+  doc:
+
+    # See github.com/varilink/tools-phpdoc for image build
+    image: varilink/phpdoc:3
+
+    # --cache-folder settings avoids write back of cache to host
+    # In effect this disables the cache if --rm is used for runs, since the
+    # cache is in the container and therefore lost when the container is
+    # removed. To reuse the cache, do not remove the container.
+    command: >
+      --directory /src
+      --target /doc
+      --cache-folder=/tmp
+      --defaultpackagename Varilink
+      --title 'Varilink PHP Library Documentation'
+      --sourcecode
+
+    # Set these on the command line or via a .env file, etc.
+    user: ${UID}:${GID}
+
+    volumes:
+      - ./src:/src
+      - ./doc:/doc
