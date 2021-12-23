@@ -251,6 +251,14 @@ class SiteCrawler {
             continue; # next link
           }
 
+          if ($link->absUrl === $crawler->getUri()) {
+            if ($log && $log > 3) {
+              $link_report .= "Self referencing link\n";
+              print $link_report;
+            }
+            continue; # next link
+          }
+
           if ($link->internal && $link->absPath == $seed->path) {
             if ($log && $log > 3) {
               $link_report .= "Skipped (seed)\n";
@@ -410,9 +418,14 @@ class Link {
     $this->domElement = $domElement;
 
     # Determine the link tag's URI from the appropriate attribute for the tag
-    if ( $this->tagName === 'a' || $this->tagName === 'link' ) {
+    if ($this->tagName === 'a') {
       $tag_uri = $this->getAttribute('href');
-    } elseif ( $this->tagName === 'script' ) {
+      if (preg_match('~^(.*?)#.*?$~', $tag_uri, $matches)) {
+        $tag_uri = $matches[1];
+      }
+    } elseif ($this->tagName === 'link') {
+      $tag_uri = $this->getAttribute('href');
+    } elseif ($this->tagName === 'script') {
       $tag_uri = $this->getAttribute('src');
     } else {
       die(
