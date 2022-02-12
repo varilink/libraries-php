@@ -98,6 +98,8 @@ class SiteCrawler {
    */
   public $link;
 
+  public $crawler;
+
   /**
    * Constructor for the \Varilink\SiteCrawler class.
    *
@@ -203,6 +205,7 @@ class SiteCrawler {
         # we found a page that is yet to be parsed
         $page_path = $page_paths[0];
         $crawler = $crawlers[$page_path];
+        $this->crawler = $crawler;
         unset($crawlers[$page_path]);
 
         $i++;
